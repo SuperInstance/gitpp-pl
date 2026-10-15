@@ -1,0 +1,43 @@
+#!/usr/bin/env perl
+# gitpp-pl — CLI for the Perl port of the git.pp fold
+use strict;
+use warnings;
+use utf8;
+use FindBin;
+use lib "$FindBin::RealBin/../lib";
+use Gitpp;
+use JSON::PP;
+use Encode qw(encode_utf8 decode_utf8);
+
+my ($file, $at);
+my $i = 0;
+while ($i < @ARGV) {
+    if ($ARGV[$i] eq '--at') {
+        my $raw = $ARGV[++$i];
+        # Perl reads argv as bytes by default. Decode to characters
+        # so the comparison with record ids (which are decoded JSON strings)
+        # works.
+        $at = decode_utf8($raw);
+    } else {
+        $file = $ARGV[$i];
+    }
+    $i++;
+}
+
+my $json;
+if ($file && $file ne '-') {
+    open my $fh, '<', $file or die "Cannot open $file: $!";
+    local $/;
+    $json = <$fh>;
+    close $fh;
+} else {
+    local $/;
+    $json = <STDIN>;
+}
+
+my $records = decode_json($json);
+my $d = $at ? Gitpp::fold_with_closure($records, $at) : Gitpp::derive($records);
+
+# Output as canonical JSON
+my $pp = JSON::PP->new->utf8(1)->canonical(1)->allow_nonref(1);
+print $pp->encode($d);
