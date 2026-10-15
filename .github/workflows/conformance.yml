@@ -1,0 +1,38 @@
+name: conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  conformance:
+    uses: SuperInstance/quilt-ci/.github/workflows/conformance.yml@main
+    with:
+      language: perl
+      runner: ubuntu-latest
+      install: |
+        sudo apt-get install -y libjson-pp-perl
+      conformance_script: |
+        # Download the conformance corpus
+        git clone --depth 1 https://github.com/SuperInstance/gitpp-conformance.git /tmp/gitpp-conformance
+        
+        # Run the runner against our bin
+        for case in $(find /tmp/gitpp-conformance/cases -name '*.json' | sort); do
+          # Extract the input array
+          input=$(python3 -c "import json; d=json.load(open('$case')); recs=d.get('input', d.get('input_tampered', [])); print(json.dumps(recs))")
+          at=$(python3 -c "import json; d=json.load(open('$case')); print(d['at'])")
+          
+          echo "$input" > /tmp/case.json
+          
+          result=$(perl bin/gitpp-pl /tmp/case.json --at "$at" 2>&1)
+          root=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('closureRoot', ''))")
+          if [ -z "$root" ]; then
+            echo "FAIL: $case"
+            echo "  output: $result"
+            exit 1
+          fi
+        done
+      expected_root: "60effe23970d8a5cc837636c44685502361288c1f00577e9addfa10cbd4fc91d"
+      live_test: true
+      live_root_at_task_c: "60effe23970d8a5cc837636c44685502361288c1f00577e9addfa10cbd4fc91d"
