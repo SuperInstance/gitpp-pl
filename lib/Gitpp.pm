@@ -6,6 +6,7 @@ use warnings;
 use utf8;
 use Digest::SHA qw(sha256_hex);
 use JSON::PP;
+use Scalar::Util qw(looks_like_number);
 
 
 # Custom JSON encoder per spec §2:
@@ -39,8 +40,37 @@ sub _emit {
         return $v ? "true" : "false";
     }
     if (ref($v)) { return 'null'; }
-    if ($v =~ /^-?\d+$/) { return $v; }
-    if ($v =~ /^-?\d+\.\d+/) { return $v; }
+    # Number handling per spec §3. Use looks_like_number so "task-1"
+    # doesn't match the numeric check.
+    if (looks_like_number($v)) {
+        # Cover 0, 0.0, -0.0
+        if ($v == 0) {
+            return "0";
+        }
+        my $abs = abs($v);
+        # Integer that fits in int domain (< 1e21)
+        # Emit as integer digits (e.g. 1 -> "1", not "1.0").
+        # This matches Python's repr(1) = "1".
+        if ($v =~ /^-?\d+$/ && $abs < 1e21) {
+            return "$v";
+        }
+        # Non-integral: scientific when |v| < 1e-4 or |v| >= 1e17
+        if ($abs < 1e-4 || $abs >= 1e17) {
+            my $s = sprintf("%.15g", $v);
+            if ($s =~ /^([^e]+)e([+-]?\d+)$/i) {
+                my $m = $1;
+                my $e = int($2);
+                my $exp_str = sprintf("%02d", abs($e));
+                if ($e < 0) {
+                    return "$m" . "e-$exp_str";
+                } else {
+                    return "$m" . "e+$exp_str";
+                }
+            }
+            return $s;
+        }
+        return sprintf("%.15g", $v);
+    }
     return _string($v);
 }
 
