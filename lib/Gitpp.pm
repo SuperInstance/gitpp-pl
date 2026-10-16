@@ -281,6 +281,7 @@ sub derive {
 
     # Apply effects with class precedence
     my %state;       # key -> {value, set_by, kind}
+    my %setters;    # spec §5.6: key -> record id that set it
     my %setter;      # key -> rid
     my %conflict;    # key -> {winner, losers}
     my %precedence = (override => 3, task => 2, witness => 1);
@@ -318,6 +319,7 @@ sub derive {
                     push @{$conflict{$k}{losers}}, $setter{$k};
                     $state{$k} = { value => $v, set_by => $rid, kind => $new_kind };
                     $setter{$k} = $rid;
+                    $setters{$k} = $rid;
                 } elsif (($precedence{$new_kind} // 0) == ($precedence{$existing_kind} // 0)) {
                     if ($is_descendant->($setter{$k}, $rid)) {
                         if (!exists $conflict{$k}) {
@@ -328,6 +330,7 @@ sub derive {
                         push @{$conflict{$k}{losers}}, $setter{$k};
                         $state{$k} = { value => $v, set_by => $rid, kind => $new_kind };
                         $setter{$k} = $rid;
+                        $setters{$k} = $rid;
                     } else {
                         if (!exists $conflict{$k}) {
                             $conflict{$k} = { winner => $setter{$k}, losers => [] };
@@ -343,6 +346,7 @@ sub derive {
             } else {
                 $state{$k} = { value => $v, set_by => $rid, kind => $r->{kind} };
                 $setter{$k} = $rid;
+                $setters{$k} = $rid;
             }
         }
     }
@@ -373,6 +377,11 @@ sub derive {
 
     return {
         state => { map { $_ => $state{$_}{value} } keys %state },
+        # Spec §5.6: setter for every key, not only contested ones. The fold
+        # computed this in $setter and discarded it, which left a same-class
+        # nudge parented on the wrong record landing or vanishing depending
+        # only on whether its own id sorted before the winner's.
+        setters => { map { $_ => $setters{$_} } grep { defined $setters{$_} } keys %state },
         order => \@order,
         conflicts => [ map { { key => $_, winner => $conflict{$_}{winner}, losers => $conflict{$_}{losers} } } sort { code_point_cmp($a, $b) } keys %conflict ],
         orphans => [ sort { code_point_cmp($a, $b) } keys %all_orphans ],
