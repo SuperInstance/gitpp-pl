@@ -4,6 +4,7 @@ package Gitpp;
 use strict;
 use warnings;
 use B ();
+use Math::BigFloat ();
 use utf8;
 use Digest::SHA qw(sha256_hex);
 use JSON::PP;
@@ -15,6 +16,46 @@ use Scalar::Util qw(looks_like_number);
 # - ', ' and ': ' as separators
 # - Literal Unicode (no \\uXXXX escapes)
 # - Object keys sorted by Unicode code point
+
+sub decode_records {
+    my ($text) = @_;
+    my $data = JSON::PP->new->allow_bignum->utf8(0)->decode($text);
+    _numify_in($data);
+    return $data;
+}
+
+# Walk containers and replace any Math::Big* in place. Returns nothing;
+# mutates the structure. A BigInt can only arise from a bare number literal,
+# so this never touches a JSON string.
+sub _numify_in {
+    my ($node) = @_;
+    return unless ref $node;
+    my $r = ref $node;
+    if ($r eq 'HASH') {
+        for my $k (keys %$node) {
+            my $v = $node->{$k};
+            if (ref($v) && eval { $v->isa('Math::BigInt') }) {
+                $node->{$k} = $v->numify() + 0;
+            } else {
+                _numify_in($v);
+            }
+        }
+        return;
+    }
+    if ($r eq 'ARRAY') {
+        for my $i (0 .. $#$node) {
+            my $v = $node->[$i];
+            if (ref($v) && eval { $v->isa('Math::BigInt') }) {
+                $node->[$i] = $v->numify() + 0;
+            } else {
+                _numify_in($v);
+            }
+        }
+        return;
+    }
+    return;
+}
+
 sub canonical_json {
     my ($v) = @_;
     return _emit($v, ", ", ": ");
