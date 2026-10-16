@@ -51,8 +51,13 @@ sub _emit {
         # Integer that fits in int64 (< 1e16). Larger integer-valued
         # floats fall through to scientific notation (matches what C#
         # and C do, since the long cast would overflow).
-        if ($v =~ /^-?\d+$/ && $abs < 1e16) {
-            return "$v";
+        # The integer check uses both regex AND arithmetic to be safe:
+        # JSON::PP may parse "-323443252343067.94" as the rounded double
+        # -323443252343068 (no decimal in string form), so the regex
+        # matches but the value is "non-integer" in the original input.
+        # We treat the value as integer only if $v == int($v).
+        if ($v == int($v) && $abs < 1e16) {
+            return int($v);
         }
         # Non-integral: scientific when |v| < 1e-4 or |v| >= 1e16
         # Use 15-digit precision (Python's "short" repr), fall back to
