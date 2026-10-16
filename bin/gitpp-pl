@@ -35,7 +35,7 @@ if ($file && $file ne '-') {
     $json = <STDIN>;
 }
 
-my $records = Gitpp::decode_records($json);
+my $records = decode_json($json);
 my $d = $at ? Gitpp::fold_with_closure($records, $at) : Gitpp::derive($records);
 
 # Output as canonical JSON
