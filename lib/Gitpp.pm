@@ -62,17 +62,19 @@ sub _emit {
         # Non-integral: scientific when |v| < 1e-4 or |v| >= 1e16
         # Use 15-digit precision (Python's "short" repr), fall back to
         # 16 then 17 if 15 doesn't round-trip. Matches Python repr().
-        my $digits = 15;
-        my $s = sprintf("%.${digits}g", $v);
-        if ($s + 0 != $v) {
-            # 15 digits didn't round-trip; try 16
-            $digits = 16;
-            $s = sprintf("%.${digits}g", $v);
-            if ($s + 0 != $v) {
-                # Still didn't; fall back to 17
-                $digits = 17;
-                $s = sprintf("%.${digits}g", $v);
-            }
+        my $s;
+        my $found = 0;
+        for my $d (15, 16, 17) {
+            $s = sprintf("%.${d}g", $v);
+            if ($s + 0 != $v) { next; }
+            if ($abs >= 1e16 && $s !~ /e/i) { next; }
+            $found = 1;
+            last;
+        }
+        if (!$found) {
+            $s = sprintf("%.16e", $v);
+            $s =~ s/0+e/e/;
+            $s =~ s/\.e/e/;
         }
         if ($abs < 1e-4 || $abs >= 1e16) {
             if ($s =~ /^([^e]+)e([+-]?\d+)$/i) {
