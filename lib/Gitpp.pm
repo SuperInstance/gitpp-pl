@@ -48,15 +48,28 @@ sub _emit {
             return "0";
         }
         my $abs = abs($v);
-        # Integer that fits in int domain (< 1e21)
-        # Emit as integer digits (e.g. 1 -> "1", not "1.0").
-        # This matches Python's repr(1) = "1".
-        if ($v =~ /^-?\d+$/ && $abs < 1e21) {
+        # Integer that fits in int64 (< 1e16). Larger integer-valued
+        # floats fall through to scientific notation (matches what C#
+        # and C do, since the long cast would overflow).
+        if ($v =~ /^-?\d+$/ && $abs < 1e16) {
             return "$v";
         }
-        # Non-integral: scientific when |v| < 1e-4 or |v| >= 1e17
-        if ($abs < 1e-4 || $abs >= 1e17) {
-            my $s = sprintf("%.15g", $v);
+        # Non-integral: scientific when |v| < 1e-4 or |v| >= 1e16
+        # Use 15-digit precision (Python's "short" repr), fall back to
+        # 16 then 17 if 15 doesn't round-trip. Matches Python repr().
+        my $digits = 15;
+        my $s = sprintf("%.${digits}g", $v);
+        if ($s + 0 != $v) {
+            # 15 digits didn't round-trip; try 16
+            $digits = 16;
+            $s = sprintf("%.${digits}g", $v);
+            if ($s + 0 != $v) {
+                # Still didn't; fall back to 17
+                $digits = 17;
+                $s = sprintf("%.${digits}g", $v);
+            }
+        }
+        if ($abs < 1e-4 || $abs >= 1e16) {
             if ($s =~ /^([^e]+)e([+-]?\d+)$/i) {
                 my $m = $1;
                 my $e = int($2);
@@ -69,7 +82,7 @@ sub _emit {
             }
             return $s;
         }
-        return sprintf("%.15g", $v);
+        return $s;
     }
     return _string($v);
 }
