@@ -3,6 +3,7 @@ package Gitpp;
 # Doc-only discipline: written from git.pp-spec v0.3.0 alone.
 use strict;
 use warnings;
+use B ();
 use utf8;
 use Digest::SHA qw(sha256_hex);
 use JSON::PP;
@@ -17,6 +18,17 @@ use Scalar::Util qw(looks_like_number);
 sub canonical_json {
     my ($v) = @_;
     return _emit($v, ", ", ": ");
+}
+
+
+# True iff $v is a JSON NUMBER (not a string that merely looks numeric).
+# B is core Perl, so this keeps the port stdlib-only.
+sub _is_json_number {
+    my ($v) = @_;
+    return 0 if ref $v;
+    my $flags = B::svref_2object(\$v)->FLAGS;
+    return 0 if $flags & B::SVp_POK();          # POK => it is (also) a string
+    return (($flags & B::SVp_IOK()) || ($flags & B::SVp_NOK())) ? 1 : 0;
 }
 
 sub _emit {
@@ -40,9 +52,15 @@ sub _emit {
         return $v ? "true" : "false";
     }
     if (ref($v)) { return 'null'; }
-    # Number handling per spec §3. Use looks_like_number so "task-1"
-    # doesn't match the numeric check.
-    if (looks_like_number($v)) {
+    # Number handling per spec §3.
+    #
+    # This MUST test the SV's numeric flags, not looks_like_number(). JSON::PP
+    # hands back a plain scalar for both `1.5e20` and the STRING "1.5e20", and
+    # looks_like_number() is true for both -- so the old test emitted a numeric
+    # string unquoted (`{"x": 1.5e20}`), silently turning a string into a
+    # number and changing the leaf. Spec §3 says strings are "unchanged".
+    # (gitpp-pl v0.1.6)
+    if (_is_json_number($v)) {
         # Cover 0, 0.0, -0.0
         if ($v == 0) {
             return "0";
@@ -192,6 +210,32 @@ sub _find_cycles {
 }
 
 # The fold: returns {state, order, conflicts, orphans}
+
+# Structural key for an effects value: two records "agree" on a key iff their
+# values serialize identically. Hashes sort their keys, so key order never
+# counts as a difference.
+#
+# IMPORTANT: this never touches the caller's SV. Anything that stringifies a
+# value (sprintf, join, string concat) adds SVp_POK to the *aliased* SV in
+# Perl, which would make a genuine JSON number look like a string to the
+# encoder downstream. Hence the explicit copy in the scalar branch.
+sub _value_key {
+    my ($v) = @_;
+    return 'null' if !defined $v;
+    if (ref($v) eq 'HASH') {
+        return '{' . join(',', map { canonical_json($_) . ':' . _value_key($v->{$_}) }
+                             sort { code_point_cmp($a, $b) } keys %$v) . '}';
+    }
+    if (ref($v) eq 'ARRAY') {
+        return '[' . join(',', map { _value_key($_) } @$v) . ']';
+    }
+    if (ref($v) eq 'JSON::PP::Boolean') {
+        return $v ? 'true' : 'false';
+    }
+    my $copy = $v;          # copy: stringify the copy, never the original
+    return canonical_json($copy);
+}
+
 sub derive {
     my ($records) = @_;
     my %by_id = map { $_->{id} => $_ } grep { $_->{id} } @$records;
@@ -303,10 +347,34 @@ sub derive {
         }
     }
 
+    # Per spec §5.3: a conflict is emitted only when 2+ DISTINCT values exist
+    # for k across ALL candidates, and `losers` is every candidate that set k
+    # with a value OTHER THAN the winner's. The streaming loop above records a
+    # loser the moment one outranks another, which over-reports when two
+    # records agree. Reconcile here. (gitpp-pl v0.1.5)
+    my %vals;
+    for my $rid (keys %applied) {
+        my $e = $applied{$rid}{effects} || {};
+        for my $k (keys %$e) {
+            push @{ $vals{$k} }, _value_key($e->{$k});
+        }
+    }
+    for my $k (keys %conflict) {
+        my $all = $vals{$k} || [];
+        my %uniq = map { $_ => 1 } @$all;
+        if (scalar(keys %uniq) < 2) { delete $conflict{$k}; next; }
+        my $w = $conflict{$k}{winner};
+        my $wv = $w && $applied{$w} ? _value_key($applied{$w}{effects}{$k}) : undef;
+        $conflict{$k}{losers} = [ grep {
+            $_ ne $w && $applied{$_} && _value_key($applied{$_}{effects}{$k}) ne $wv
+        } @{ $conflict{$k}{losers} } ];
+        if (!@{ $conflict{$k}{losers} }) { delete $conflict{$k}; next; }
+    }
+
     return {
         state => { map { $_ => $state{$_}{value} } keys %state },
         order => \@order,
-        conflicts => [ map { { key => $_, winner => $conflict{$_}{winner}, losers => $conflict{$_}{losers} } } keys %conflict ],
+        conflicts => [ map { { key => $_, winner => $conflict{$_}{winner}, losers => $conflict{$_}{losers} } } sort { code_point_cmp($a, $b) } keys %conflict ],
         orphans => [ sort { code_point_cmp($a, $b) } keys %all_orphans ],
     };
 }
