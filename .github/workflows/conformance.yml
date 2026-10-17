@@ -9,6 +9,16 @@ jobs:
   conformance:
     uses: SuperInstance/quilt-ci/.github/workflows/conformance.yml@main
     secrets: inherit
+    # A reusable workflow's permissions are CAPPED BY THE CALLER's. The
+    # callee asks for pull-requests: write to post its result as a PR
+    # comment, and without this the step fails with
+    #
+    #   Resource not accessible by integration
+    #
+    # A permissions error dressed up as a missing feature.
+    permissions:
+      contents: read
+      pull-requests: write
     with:
       language: perl
       runner: ubuntu-latest
@@ -206,11 +216,6 @@ jobs:
             exit 1
           fi
         done
-        echo "  $compared case(s) compared"
-        if [ "$compared" -lt 28 ]; then
-          echo "FAIL: only $compared case(s) were compared (expected at least 28)"
-          exit 1
-        fi
         echo "  $compared case(s) compared"
         if [ "$compared" -lt 28 ]; then
           echo "FAIL: only $compared case(s) were compared (expected at least 28)"
