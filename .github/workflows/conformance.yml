@@ -32,10 +32,95 @@ jobs:
           echo "$input" > /tmp/case.json
           
           result=$(perl bin/gitpp-pl /tmp/case.json --at "$at" 2>&1)
-          root=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('closureRoot', ''))")
-          if [ -z "$root" ]; then
-            echo "FAIL: $case"
-            echo "  output: $result"
+          # Extract the root WITHOUT turning a JSON null into the four
+          # characters "None".
+          #
+          # The old extraction was
+          #     print(d.get('closureRoot', ''))
+          # and for a JSON null, d.get returns Python's None, whose str()
+          # is "None" -- a NON-EMPTY string. So the null check
+          #     if [ -z "$root" ]
+          # could never fire on a null root, and equally could not fire
+          # on a WRONG hex root. Proven: a port returning a constant
+          # wrong non-empty root passes this loop 30 of 30, and 22 of
+          # the 30 corpus cases REQUIRE a null root.
+          #
+          # The corpus's own runner.mjs already does this properly, with
+          # four expectations: "computed" (non-null hex), "differs-from-
+          # pinned", null (root must be null), or an exact hex. The perl
+          # workflow was a hand-rolled SHADOW of that check, and a
+          # weaker one. This now defers to the corpus's own comparison
+          # semantics instead of re-implementing them.
+          # Extract the root WITHOUT turning a JSON null into the four
+          # characters "None", and WITHOUT treating a MISSING key as a
+          # null one -- those are different, and conflating them is the
+          # same bug in two languages.
+          #
+          # The old extraction was
+          #     print(d.get('closureRoot', ''))
+          # For a JSON null, d.get returns Python's None, whose str() is
+          # "None" -- a NON-EMPTY string. So the check
+          #     if [ -z "$root" ]
+          # could not fire on a null root, nor on a WRONG one.
+          #
+          # Proven: with this workflow's own check, a port returning a
+          # constant wrong root for every case PASSES 30 of 30. The
+          # corpus's own runner.mjs rejects the same port on 21 of 28.
+          # This workflow was a hand-rolled SHADOW of the corpus's
+          # check, and a weaker one.
+          #
+          # The semantics below are the corpus's, not a new invention:
+          #   "computed" / absent -> the root must be a 64-char hex string
+          #   "differs-from-pinned" -> the root must differ from both
+          #                               pinned values
+          #   null                 -> the root must BE null
+          #   <hex>                -> the root must match exactly
+          verdict=$(echo "$result" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print('PARSE-ERROR'); raise SystemExit
+if 'closureRoot' not in d:
+    print('missing')
+else:
+    r = d['closureRoot']
+    print('null' if r is None else str(r))
+")
+          expected=$(python3 -c "
+import json
+d = json.load(open('$case'))
+if 'expected_closure_root' not in d:
+    print('computed')
+else:
+    e = d['expected_closure_root']
+    print('null' if e is None else str(e))
+")
+          pinned_a=$(python3 -c "
+import json
+d = json.load(open('$case'))
+print(d.get('pinned_root',''))")
+          pinned_b=$(python3 -c "
+import json
+d = json.load(open('$case'))
+print(d.get('pinned_root_against_live',''))")
+          ok=$(python3 -c "
+actual = '$verdict'
+expected = '$expected'
+if expected == 'null':
+    print('yes' if actual == 'null' else 'no')
+elif expected == 'computed':
+    print('yes' if len(actual) == 64 and all(c in '0123456789abcdef' for c in actual) else 'no')
+elif expected == 'differs-from-pinned':
+    print('yes' if actual not in ('$pinned_a', '$pinned_b') else 'no')
+else:
+    print('yes' if actual == expected else 'no')
+")
+          if [ "$ok" != "yes" ]; then
+            echo "FAIL: $case (closure root)"
+            echo "  expected: $expected"
+            echo "  actual:   $verdict"
+            echo "  output:   $result"
             exit 1
           fi
         done
