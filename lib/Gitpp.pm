@@ -470,7 +470,26 @@ sub derive {
         # only on whether its own id sorted before the winner's.
         setters => { map { $_ => $setters{$_} } grep { defined $setters{$_} } keys %state },
         order => \@order,
-        conflicts => [ map { { key => $_, winner => $conflict{$_}{winner}, losers => $conflict{$_}{losers} } } sort { code_point_cmp($a, $b) } keys %conflict ],
+        # SPEC 5.2 (v0.4.6): the losers are listed in the 5.4 order
+        # sequence, not in discovery order and not sorted by codepoint.
+        #
+        # The spec fixes the MEMBERSHIP of the loser set ("every record
+        # that tried to set K with a value other than the winner's") and
+        # says "N-1 losers" -- set language -- without ever saying what
+        # order the set is written in. Three ports emitted three
+        # different serialisations of the same fold, so a consumer that
+        # hashes or diffs a ledger got different bytes for identical
+        # semantics.
+        #
+        # Minimal witness: m(override,x=2), z(witness,x=3),
+        # a(override,x=1,parents:[z]) -> order [m,z,a], winner m, losers
+        # z and a. Order sequence gives [z,a]; codepoint gives [a,z].
+        conflicts => [ map {
+            my $k = $_;
+            my %pos; $pos{$order[$_]} = $_ for 0 .. $#order;
+            { key => $k, winner => $conflict{$k}{winner},
+              losers => [ sort { ($pos{$a} // 0) <=> ($pos{$b} // 0) } @{$conflict{$k}{losers}} ] }
+        } sort { code_point_cmp($a, $b) } keys %conflict ],
         orphans => [ sort { code_point_cmp($a, $b) } keys %all_orphans ],
     };
 }
