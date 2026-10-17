@@ -15,6 +15,86 @@ use Scalar::Util qw(looks_like_number);
 # - ', ' and ': ' as separators
 # - Literal Unicode (no \\uXXXX escapes)
 # - Object keys sorted by Unicode code point
+
+# Rewrite bare integer literals that exceed a 64-bit IV so JSON::PP decodes
+# them as float64 rather than promoting them to a string.
+#
+# WHY THIS EXISTS. Spec §2/§3 put every JSON number in the float64 domain,
+# but JSON::PP does not. An integer literal too large for a UV/IV is
+# returned as a plain STRING, and a JSON string must stay a string, so the
+# information is already gone by the time we see the decoded structure --
+# no amount of inspection recovers it. The fix therefore has to happen on
+# the TEXT, before decoding.
+#
+# Appending ".0" to such a literal makes JSON::PP produce a proper NV,
+# which is what the spec asks for. A quoted string is untouched, because
+# the scanner never enters a string literal. Small integers are untouched
+# too: they are already exact in an IV and every port agrees on them.
+#
+# "724818294626474393600" (a string) and 724818294626474393600 (a number)
+# must stay different records, and this scan is the only place that
+# distinction still exists. (gitpp-pl v0.1.9)
+sub _widen_large_int_literals {
+    my ($text) = @_;
+    my $out = "";
+    my $i   = 0;
+    my $n   = length $text;
+    my $BS  = chr(92);
+    my $is_digit = sub { my $c = substr($text, $_[0], 1); $c ge "0" && $c le "9" };
+
+    while ($i < $n) {
+        my $c = substr($text, $i, 1);
+        if ($c eq '"') {
+            my $j = $i + 1;
+            while ($j < $n) {
+                my $d = substr($text, $j, 1);
+                if ($d eq $BS) { $j += 2; next; }
+                last if $d eq '"';
+                $j++;
+            }
+            $out .= substr($text, $i, $j - $i + 1);
+            $i = $j + 1;
+            next;
+        }
+        if ($c eq "-" || $is_digit->($i)) {
+            my $j = $i;
+            $j++ if substr($text, $j, 1) eq "-";
+            my $ds = $j;
+            $j++ while $j < $n && $is_digit->($j);
+            my $ndigits = $j - $ds;
+            my $int_only = 1;
+            if ($j < $n && substr($text, $j, 1) eq ".") {
+                $int_only = 0; $j++;
+                $j++ while $j < $n && $is_digit->($j);
+            }
+            if ($j < $n && (substr($text, $j, 1) eq "e" || substr($text, $j, 1) eq "E")) {
+                $int_only = 0; $j++;
+                $j++ if $j < $n && (substr($text, $j, 1) eq "+" || substr($text, $j, 1) eq "-");
+                $j++ while $j < $n && $is_digit->($j);
+            }
+            my $lit = substr($text, $i, $j - $i);
+            $out .= ($int_only && $ndigits >= 16) ? $lit . ".0" : $lit;
+            $i = $j;
+            next;
+        }
+        $out .= $c;
+        $i++;
+    }
+    return $out;
+}
+
+
+# Decode a record set with every number in the float64 domain (spec §2/§3).
+#
+# The widening must happen on the TEXT: by the time JSON::PP hands back a
+# structure, a too-large integer literal is already a string, and a JSON
+# string must stay a string. Callers should use this rather than
+# decode_json, which does not widen.
+sub decode_records {
+    my ($text) = @_;
+    return JSON::PP->new->utf8(0)->decode(_widen_large_int_literals($text));
+}
+
 sub canonical_json {
     my ($v) = @_;
     return _emit($v, ", ", ": ");
@@ -126,16 +206,23 @@ sub _string {
 }
 
 sub code_point_cmp {
-    my @a = unpack("U*", $a);
-    my @b = unpack("U*", $b);
-    for my $i (0 .. $#a) {
-        return -1 if $i > $#b;
-        return 1 if $i > $#a;
-        return -1 if $a[$i] < $b[$i];
-        return 1 if $a[$i] > $b[$i];
+    my ($lhs, $rhs) = @_;
+    return 0 if !defined $lhs && !defined $rhs;
+    return -1 if !defined $lhs;
+    return 1  if !defined $rhs;
+    my @L = unpack("U*", $lhs);
+    my @R = unpack("U*", $rhs);
+    my $n = @L < @R ? @L : @R;
+    for my $i (0 .. $n - 1) {
+        my ($x, $y) = ($L[$i], $R[$i]);
+        next if $x == $y;
+        return $x < $y ? -1 : 1;
     }
-    return 0;
+    # one is a prefix of the other: the shorter sorts first
+    return @L <=> @R;
 }
+
+
 
 # Build a record leaf per the spec §2.
 sub record_leaf {
