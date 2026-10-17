@@ -163,6 +163,17 @@ jobs:
             exit 1
           fi
         done
-      expected_root: "60effe23970d8a5cc837636c44685502361288c1f00577e9addfa10cbd4fc91d"
-      live_test: true
-      live_root_at_task_c: "60effe23970d8a5cc837636c44685502361288c1f00577e9addfa10cbd4fc91d"
+      # The three inputs that used to be here -- expected_root, live_test
+      # and live_root_at_task_c -- were DECLARED AND NEVER USED. They
+      # were leftovers from a runner-based design, and GitHub rejects a
+      # reusable-workflow call that passes an input the callee does not
+      # declare:
+      #
+      #   Invalid input, expected_root is not defined in the referenced
+      #   workflow
+      #
+      # Removing them is also strictly BETTER than keeping them. The
+      # expectation is read from the CORPUS CASE ITSELF, which carries
+      # expected_closure_root. A constant duplicated into the workflow
+      # can drift from the corpus, and a drifted expectation is a check
+      # that passes for the wrong reason.
