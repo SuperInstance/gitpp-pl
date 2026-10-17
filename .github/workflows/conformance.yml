@@ -33,6 +33,10 @@ jobs:
             exit 1
           fi
         done
+
+        # Spec §5.5 orphan regression battery (13 discriminating cases
+        # + the §5.5 counterexample). Needs no deps beyond core Perl.
+        prove -v t/cycle-orphans.t
       expected_root: "60effe23970d8a5cc837636c44685502361288c1f00577e9addfa10cbd4fc91d"
       live_test: true
       live_root_at_task_c: "60effe23970d8a5cc837636c44685502361288c1f00577e9addfa10cbd4fc91d"

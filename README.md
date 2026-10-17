@@ -6,6 +6,7 @@
 
 - `lib/Gitpp.pm` — the `Gitpp` Perl module with `record_leaf`, `closure_root`, `derive`, and `fold_with_closure` functions.
 - `bin/gitpp-pl` — a CLI that reads a JSON record set from a file (or stdin), takes `--at <record>`, and prints the fold output as JSON.
+- `t/cycle-orphans.t` — the spec §5.5 orphan regression battery (13 discriminating cases + the §5.5 counterexample). Core Perl only (`Test::More`, `JSON::PP`).
 
 ## Build & run
 
@@ -20,6 +21,11 @@ perl -Ilib -MGitpp -e '
   my $d = Gitpp::fold_with_closure($records, "task-c");
   print "root: $d->{closureRoot}\n";
 '
+```
+
+```bash
+# Run the test suite (spec §5.5 orphan regression; no deps beyond core Perl)
+prove -v t/cycle-orphans.t
 ```
 
 Output is JSON:

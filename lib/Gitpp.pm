@@ -264,38 +264,6 @@ sub closure_root {
     return (sha256_hex(Encode::encode_utf8($joined)), \@sorted);
 }
 
-# Detect cycle via DFS
-sub _find_cycles {
-    my (%by_id) = @_;
-    my %color;
-    my %cycle;
-    my $dfs;
-    $dfs = sub {
-        my ($rid, $path) = @_;
-        my $c = $color{$rid} // 0;
-        if ($c == 1) {
-            my $idx = 0;
-            $idx++ while $path->[$idx] ne $rid;
-            for my $i ($idx .. $#{$path}) {
-                $cycle{$path->[$i]} = 1;
-            }
-            return;
-        }
-        return if $c == 2;
-        $color{$rid} = 1;
-        push @{$path}, $rid;
-        for my $p (@{$by_id{$rid}{parents} || []}) {
-            $dfs->($p, $path) if exists $by_id{$p};
-        }
-        pop @$path;
-        $color{$rid} = 2;
-    };
-    for my $rid (keys %by_id) {
-        $dfs->($rid, []) if ($color{$rid} // 0) == 0;
-    }
-    return %cycle;
-}
-
 # The fold: returns {state, order, conflicts, orphans}
 
 # Structural key for an effects value: two records "agree" on a key iff their
@@ -327,19 +295,75 @@ sub derive {
     my ($records) = @_;
     my %by_id = map { $_->{id} => $_ } grep { $_->{id} } @$records;
 
-    my %orphans;
-    for my $r (@$records) {
-        next unless $r->{id};
-        for my $p (@{$r->{parents} || []}) {
-            unless (exists $by_id{$p}) {
-                $orphans{$r->{id}} = 1;
-                last;
+    # Spec §5.5 — "cycle-affected records are orphans for output purposes".
+    #
+    # This needs THREE clauses, not one. The two obvious single-clause rules each
+    # get a different case wrong:
+    #
+    #   rule A: a parent id is missing from the record set. Correct for a
+    #           missing-parent record, but blind to cycles — a cycle member's
+    #           parents all exist, so records downstream of the cycle sail
+    #           through and reach state.
+    #   rule B: anything Kahn never emitted. Correct for cycles, but it also
+    #           swallows the descendants of a MISSING parent, which are perfectly
+    #           orderable. (That trade-off is gitpp-rr-reader3#1.)
+    #
+    # Clause 3 is what separates the two cases no single rule can: a cycle
+    # DESCENDANT's parent exists but is unorderable, while a missing-parent
+    # DESCENDANT's parent does not exist at all.
+    #
+    # %orderable is Kahn over the FULL record set with in-degree counting only
+    # parents THAT EXIST. An absent parent cannot block a record — there is
+    # nothing to wait for — which is exactly why a missing-parent record and its
+    # descendants stay orderable and must NOT be orphaned.
+    my %o_in_deg   = map { $_ => 0 } keys %by_id;
+    my %o_children = map { $_ => [] } keys %by_id;
+    for my $rid (keys %by_id) {
+        for my $p (@{$by_id{$rid}{parents} || []}) {
+            if (exists $by_id{$p}) {
+                push @{$o_children{$p}}, $rid;
+                $o_in_deg{$rid}++;
             }
         }
     }
-    my %cycle = _find_cycles(%by_id);
-    my %all_orphans = (%orphans, %cycle);
-    my %applied = map { $_->{id} => $_ } grep { $_->{id} && !$all_orphans{$_->{id}} } @$records;
+    my %orderable;
+    my @o_queue = sort { code_point_cmp($a, $b) }
+                  grep { $o_in_deg{$_} == 0 } keys %by_id;
+    while (@o_queue) {
+        my $rid = shift @o_queue;
+        $orderable{$rid} = 1;
+        for my $child (sort { code_point_cmp($a, $b) } @{$o_children{$rid}}) {
+            $o_in_deg{$child}--;
+            if ($o_in_deg{$child} == 0) {
+                push @o_queue, $child;
+                @o_queue = sort { code_point_cmp($a, $b) } @o_queue;
+            }
+        }
+    }
+
+    my %orphans;
+    for my $rid (keys %by_id) {
+        my $ps = $by_id{$rid}{parents} || [];
+        # 1. missing parent
+        if (grep { !exists $by_id{$_} } @$ps) {
+            $orphans{$rid} = 1;
+            next;
+        }
+        # 2. cycle member — can never be topologically ordered. This subsumes the
+        # old DFS cycle scan: a node on a cycle always has an in-edge from
+        # another cycle member, so Kahn can never emit it.
+        if (!$orderable{$rid}) {
+            $orphans{$rid} = 1;
+            next;
+        }
+        # 3. cycle descendant — an existing parent that is itself unorderable.
+        # The exists() guard is the whole point: it keeps clause 1 (parent
+        # absent) and clause 3 (parent present but stuck) apart.
+        if (grep { exists $by_id{$_} && !$orderable{$_} } @$ps) {
+            $orphans{$rid} = 1;
+        }
+    }
+    my %applied = map { $_->{id} => $_ } grep { $_->{id} && !$orphans{$_->{id}} } @$records;
 
     # Topo sort
     my %in_deg = map { $_ => 0 } keys %applied;
@@ -471,7 +495,7 @@ sub derive {
         setters => { map { $_ => $setters{$_} } grep { defined $setters{$_} } keys %state },
         order => \@order,
         conflicts => [ map { { key => $_, winner => $conflict{$_}{winner}, losers => $conflict{$_}{losers} } } sort { code_point_cmp($a, $b) } keys %conflict ],
-        orphans => [ sort { code_point_cmp($a, $b) } keys %all_orphans ],
+        orphans => [ sort { code_point_cmp($a, $b) } keys %orphans ],
     };
 }
 
