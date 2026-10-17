@@ -19,11 +19,37 @@ jobs:
         # paths below are relative to the port repo. The public corpus
         # is already cloned at ./conformance by the reusable workflow.
         # The reusable workflow already cloned the public corpus to
-        # ./conformance. Use it rather than cloning a second copy.
-        CORPUS="${CORPUS:-./conformance}"
+        # <workspace>/conformance, and the port is checked out at
+        # <workspace>/port. The script runs with the port as its working
+        # directory, so the corpus is at ../conformance -- NOT
+        # ./conformance.
+        #
+        # It was ./conformance, and the result was
+        #
+        #   find: './conformance/cases': No such file or directory
+        #
+        # on a loop over ZERO cases, and the script then reported
+        # SUCCESS. A check that compared NOTHING and passed is the
+        # single failure mode this whole branch exists to remove, and
+        # it was in my own new code.
+        CORPUS="${CORPUS:-../conformance}"
         
         # Run the runner against our bin
-        for case in $(find "$CORPUS/cases" -name '*.json' | sort); do
+        CASES=$(find "$CORPUS/cases" -name '*.json' | sort)
+        NCASES=$(echo "$CASES" | grep -c . || true)
+        echo "  $NCASES case(s) in the corpus"
+        # A run that compared against NOTHING must FAIL.
+        #
+        # A wrong path yields zero cases, the loop body never runs, and
+        # the script exits 0 -- a green badge on a check that checked
+        # nothing. The corpus has 30 cases and 2 of them are known
+        # gaps, so at least 28 must be comparable.
+        if [ "$NCASES" -lt 28 ]; then
+          echo "FAIL: only $NCASES case(s) found under $CORPUS/cases (expected at least 28)"
+          exit 1
+        fi
+        compared=0
+        for case in $CASES; do
           # Extract the input array, with the CORPUS's own semantics.
           #
           # The old extraction was
@@ -45,7 +71,7 @@ jobs:
           #
           # The same rule, in the same order.
           input=$(python3 -c "
-        import json, urllib.request
+        import json, sys, urllib.request
         d = json.load(open('$case'))
         recs = d.get('input_tampered') or d.get('input')
         if not recs:
@@ -58,8 +84,24 @@ jobs:
                 # records, and the traceback points at urllib, not at the
                 # deployment.
                 req = urllib.request.Request(src, headers={'User-Agent': 'gitpp-conformance/1.0'})
-                with urllib.request.urlopen(req, timeout=30) as r:
-                    recs = json.load(r).get('records')
+                # The deployment answers HTTP 503 INTERMITTENTLY. The
+                # same URL returns 200 on the next request, seconds
+                # later. So the fetch is RETRIED, and a failure after
+                # three attempts is a SKIP that is named -- not a silent
+                # empty input, and not a crash.
+                last = None
+                for attempt in range(3):
+                    try:
+                        with urllib.request.urlopen(req, timeout=30) as r:
+                            recs = json.load(r).get('records')
+                        last = None
+                        break
+                    except Exception as e:
+                        last = e
+                        import time; time.sleep(1.5 * (attempt + 1))
+                if last is not None:
+                    print('FETCH-FAILED: %s' % last, file=sys.stderr)
+                    recs = None
         print(json.dumps(recs) if recs else '')
         ")
                   at=$(python3 -c "import json; d=json.load(open('$case')); print(d['at'])")
@@ -68,6 +110,7 @@ jobs:
                     echo "SKIP: $case (no input records available -- e.g. a prose input_modification)"
                     continue
                   fi
+                  compared=$((compared + 1))
                   echo "$input" > /tmp/case.json
 
                   result=$(perl bin/gitpp-pl /tmp/case.json --at "$at" 2>&1)
@@ -163,6 +206,16 @@ jobs:
             exit 1
           fi
         done
+        echo "  $compared case(s) compared"
+        if [ "$compared" -lt 28 ]; then
+          echo "FAIL: only $compared case(s) were compared (expected at least 28)"
+          exit 1
+        fi
+        echo "  $compared case(s) compared"
+        if [ "$compared" -lt 28 ]; then
+          echo "FAIL: only $compared case(s) were compared (expected at least 28)"
+          exit 1
+        fi
       # The three inputs that used to be here -- expected_root, live_test
       # and live_root_at_task_c -- were DECLARED AND NEVER USED. They
       # were leftovers from a runner-based design, and GitHub rejects a
