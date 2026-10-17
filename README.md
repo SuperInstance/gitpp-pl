@@ -6,6 +6,17 @@
 
 - `lib/Gitpp.pm` — the `Gitpp` Perl module with `record_leaf`, `closure_root`, `derive`, and `fold_with_closure` functions.
 - `bin/gitpp-pl` — a CLI that reads a JSON record set from a file (or stdin), takes `--at <record>`, and prints the fold output as JSON.
+- `t/leaf-encoding.t` — the byte-level regression suite: the four pinned cross-port leaves, the spec §2 canon bytes for all 32 C0 controls, and the placement rules for the string encoder. Core `Test::More` only.
+
+## Tests
+
+```bash
+prove -Ilib t/          # 74 assertions, no network, no fixtures
+```
+
+The conformance CI (`.github/workflows/conformance.yml`) runs this first, then
+the public corpus. `t/` is where the byte-level pins live; the corpus is where
+the fold semantics live.
 
 ## Build & run
 
@@ -48,6 +59,38 @@ Output is JSON:
 
 Closure root at `poc-quilt-1@task-c` is `60effe23970d8a5cc837636c44685502361288c1f00577e9addfa10cbd4fc91d` — byte-for-byte match with the hub.
 
+## Fixed in v0.1.10 — the other eighteen C0 controls
+
+`_string()` escaped the seven C0 controls that have a two-character short form
+(`\"` `\\` `\b` `\f` `\n` `\r` `\t`) and let the other eighteen through
+**raw**. A record carrying U+0001 in a string value hashed a canon containing
+the bare `0x01` byte — not legal JSON, and a byte no other port emits. Minimal
+witness `{"id":"a","kind":"task","parents":[],"effects":{"c":"a\u0001b"},"reason":null}`:
+
+| port | leaf |
+|---|---|
+| before | `2059a2b499ab997719e1e00f379f2fffe895c1ea7a865b22a8c80adb1a39191d` |
+| reference (git.pp-doctor) | `f178bc60f931c55d98f085f5afc6a30fa0f86ef7e79545b535859b7201a43c19` |
+| after | `f178bc60f931c55d98f085f5afc6a30fa0f86ef7e79545b535859b7201a43c19` |
+
+The set of characters JSON requires escaped is defined by JSON, not by the
+short forms Python's `json` module happens to prefer: `U+0000-U+0007`, `U+000B`
+and `U+000E-U+001F` now emit `\u00xx` with **lowercase** hex, matching
+`json.dumps`, `gitpp-c` and the other three ports. U+007F (DEL) is deliberately
+left literal — RFC 8259 does not require it escaped and `json.dumps` emits it
+raw, so escaping it would break agreement on any record containing one.
+
+This is **not** a surrogate or non-ASCII defect. The pinned case-4 non-BMP id
+(the rocket 🚀) was already correct and is unchanged: everything above U+007F
+is still emitted literally, as spec §2 step 7 requires.
+
+The new substitution runs **last** in `_string()`. It emits text that begins
+with a literal backslash, so running it before `s/\\/\\\\/g` would feed
+its own output back through the doubling and produce `\\u0001` — an escaped
+backslash followed by the literal text `u0001`. Still a different leaf, but
+silent. Running it last restores the invariant that no substitution ever
+re-escapes text another substitution produced.
+
 **Cross-port leaf verification (§3.5)**: all 4 pinned leaves in `git.pp-spec/cross-port-leafs.json` match byte-for-byte, including the non-BMP id case (the rocket emoji).
 
 ## Why a Perl port?
@@ -67,6 +110,8 @@ The only place the spec wasn't enough was the JSON encoding — the spec says `,
 - ARGV comes in as bytes by default. For non-ASCII record ids, the CLI decodes ARGV with `decode_utf8` before passing to the fold (else `exists $by_id{$at}` returns false for emoji ids).
 - JSON::PP's `canonical(1)` does sort keys but uses compact JSON (no spaces). The spec requires `, ` and `: ` separators, so a custom encoder is needed.
 - Perl's `\b` in regex is word-boundary, not backspace. Use `\x08` for backspace in the JSON string encoder.
+- Perl strings are byte strings until something upgrades them, and a `\xNN` class in a substitution matches whichever kind it is handed. When pinning non-BMP behaviour, hash `Encode::encode_utf8($canon)` rather than `$canon`, or a regex like `/\xf0\xf9\x9a\x80/` silently tests the wrong thing — this suite shipped that bug for one commit.
+- An **unpaired surrogate in the input document** is the one string case this port does not reject: `JSON::PP` decodes a lone `\uD800` to a Perl character of that code point, and `Encode::encode_utf8` then emits the WTF-8 bytes `ED A0 80` — not valid UTF-8, and a leaf no other port can reproduce. `gitpp-c` closed its side of this on `fix/escape-and-null-kind` by making an unpaired surrogate a hard parse error (exit non-zero). The same hard rejection is the right answer here; it is not implemented in this port yet.
 
 ## Why 6 ports?
 

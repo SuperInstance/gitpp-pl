@@ -14,6 +14,12 @@ jobs:
       install: |
         sudo apt-get install -y libjson-pp-perl
       conformance_script: |
+        # In-process regression suite (core Test::More only).
+        # Runs FIRST: it pins the four cross-port leaves, the spec §2 canon
+        # bytes, and the case that distinguishes C0 controls from their short
+        # forms -- none of which the corpus exercises.
+        prove -Ilib -v t/
+
         # Download the conformance corpus
         git clone --depth 1 https://github.com/SuperInstance/gitpp-conformance.git /tmp/gitpp-conformance
         
