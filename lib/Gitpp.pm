@@ -215,6 +215,39 @@ sub _emit {
     return _string($v);
 }
 
+# Encode one JSON string. Spec §2 step 7 pins the leaf's bytes as
+# json.dumps(..., ensure_ascii=False), and the set of characters JSON requires
+# escaped is defined by JSON, not by whatever short forms an encoder happens to
+# prefer.
+#
+# THE DEFECT (gitpp-pl v0.1.10). Seven C0 controls have a two-character short
+# form (\" \\ \b \f \n \r \t); the other eighteen do not, and JSON requires
+# every one of them escaped as \uXXXX. This sub handled the seven and let the
+# other eighteen through RAW, so a record carrying U+0001 in a string value
+# hashed a canon containing the bare 0x01 byte -- a byte no other port emits,
+# and one that is not legal JSON at all. Minimal witness:
+#
+#   {"id":"a","kind":"task","parents":[],"effects":{"c":"a\u0001b"},"reason":null}
+#     this port, before : 2059a2b499ab997719e1e00f379f2fffe895c1ea7a865b22a8c80adb1a39191d
+#     reference (doctor) : f178bc60f931c55d98f085f5afc6a30fa0f86ef7e79545b535859b7201a43c19
+#
+# This is NOT a surrogate or non-ASCII defect. The pinned case-4 non-BMP id
+# (the rocket) was already correct and stays correct: everything above U+007F
+# is emitted literally, exactly as the spec demands.
+#
+# PLACEMENT -- this sub must run LAST, and the only hard constraint is that it
+# runs after the backslash doubling. The escape it emits STARTS WITH a literal
+# backslash, so running any earlier would feed its own output back into
+# `s/\\/\\\\/g` and yield \\u0001: an escaped backslash followed by the
+# literal text "u0001". That is still a different string and still a different
+# leaf, but now the error is invisible -- and it is invisible in exactly the
+# way this bug was. Running last also restores the invariant the short-form
+# subs above have always had: no sub ever re-escapes text another sub emitted.
+#
+# THE CLASS is U+0000-U+0007, U+000B and U+000E-U+001F -- the C0 controls with
+# no short form. U+007F (DEL) is deliberately NOT in it: RFC 8259 does not
+# require it escaped, and Python's json module emits it literally, so escaping
+# it here would break cross-port agreement on any record containing one.
 sub _string {
     my ($s) = @_;
     $s = "" if !defined $s;
@@ -225,6 +258,9 @@ sub _string {
     $s =~ s/\t/\\t/g;
     $s =~ s/\f/\\f/g;
     $s =~ s/\x08/\\b/g;
+    # The remaining C0 controls, as \u00xx with LOWERCASE hex -- the form
+    # Python's json.dumps, gitpp-c and the other three ports all emit.
+    $s =~ s/([\x00-\x07\x0b\x0e-\x1f])/sprintf("\\u%04x", ord($1))/ge;
     return '"' . $s . '"';
 }
 

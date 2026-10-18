@@ -42,8 +42,13 @@ jobs:
         # SUCCESS. A check that compared NOTHING and passed is the
         # single failure mode this whole branch exists to remove, and
         # it was in my own new code.
-        CORPUS="${CORPUS:-../conformance}"
-        
+        # In-process regression suite (core Test::More only).
+        # Runs FIRST: it pins the four cross-port leaves, the spec S2 canon
+        # bytes, and the case that distinguishes C0 controls from their short
+        # forms -- none of which the corpus exercises.
+        prove -Ilib -v t/
+
+        CORPUS="${CORPUS:-../conformance}"        
         # Run the runner against our bin
         CASES=$(find "$CORPUS/cases" -name '*.json' | sort)
         NCASES=$(echo "$CASES" | grep -c . || true)
