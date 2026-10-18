@@ -92,7 +92,30 @@ sub _widen_large_int_literals {
 # decode_json, which does not widen.
 sub decode_records {
     my ($text) = @_;
-    return JSON::PP->new->utf8(0)->decode(_widen_large_int_literals($text));
+    # utf8(1): the input is UTF-8 ENCODED BYTES and must be decoded into
+    # characters.
+    #
+    # It used to be utf8(0), which tells JSON::PP NOT to decode UTF-8 byte
+    # sequences. A JSON document containing a raw non-ASCII character was
+    # then read as Latin-1: the 4 UTF-8 bytes of U+1F680 became 4 separate
+    # characters U+00F0 U+009F U+009A U+0080. Encode::encode_utf8() then
+    # double-encoded them, so the leaf was the hash of a different string.
+    #
+    # THE LEAF CORPUS CANNOT SEE THIS. All 20,043 records in it are
+    # emitted with \uXXXX escapes, so the JSON source is pure ASCII and
+    # the decode flag is irrelevant. A document with RAW utf-8 bytes --
+    # which is what a normal editor produces -- is a different case
+    # entirely, and it is the case that broke.
+    #
+    # Measured, same record, two encodings of the same JSON:
+    #
+    #   \uXXXX escapes : 4be7872d56e28190a3d79e25c2e80b97213c68e7eae544c21f7b5d50debded5d  (correct)
+    #   raw utf-8 bytes: 9d50cc5f14abdb4ce79eec06559b33a0581ea199fbc84334decf3ab6d26d324f  (wrong)
+    #
+    # The reference (git.pp-doctor) reads the file as utf-8 TEXT, so the
+    # bytes are decoded to characters before parsing. utf8(1) is the
+    # same thing.
+    return JSON::PP->new->utf8(1)->decode(_widen_large_int_literals($text));
 }
 
 sub canonical_json {
@@ -494,9 +517,14 @@ sub derive {
         # only on whether its own id sorted before the winner's.
         setters => { map { $_ => $setters{$_} } grep { defined $setters{$_} } keys %state },
         order => \@order,
-        conflicts => [ map { { key => $_, winner => $conflict{$_}{winner}, losers => $conflict{$_}{losers} } } sort { code_point_cmp($a, $b) } keys %conflict ],
-        orphans => [ sort { code_point_cmp($a, $b) } keys %orphans ],
-    };
+conflicts => [ map {
+            my $k = $_;
+            my %pos; $pos{$order[$_]} = $_ for 0 .. $#order;
+            { key => $k, winner => $conflict{$k}{winner},
+              losers => [ sort { ($pos{$a} // 0) <=> ($pos{$b} // 0) } @{$conflict{$k}{losers}} ] }
+        } sort { code_point_cmp($a, $b) } keys %conflict ],
+        
+        orphans => [ sort { code_point_cmp($a, $b) } keys %orphans ],    };
 }
 
 sub fold_with_closure {
