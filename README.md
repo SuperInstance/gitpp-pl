@@ -17,6 +17,7 @@ prove -Ilib t/          # 74 assertions, no network, no fixtures
 The conformance CI (`.github/workflows/conformance.yml`) runs this first, then
 the public corpus. `t/` is where the byte-level pins live; the corpus is where
 the fold semantics live.
+- `t/cycle-orphans.t` — the spec §5.5 orphan regression battery (13 discriminating cases + the §5.5 counterexample). Core Perl only (`Test::More`, `JSON::PP`).
 
 ## Build & run
 
@@ -31,6 +32,11 @@ perl -Ilib -MGitpp -e '
   my $d = Gitpp::fold_with_closure($records, "task-c");
   print "root: $d->{closureRoot}\n";
 '
+```
+
+```bash
+# Run the test suite (spec §5.5 orphan regression; no deps beyond core Perl)
+prove -v t/cycle-orphans.t
 ```
 
 Output is JSON:
