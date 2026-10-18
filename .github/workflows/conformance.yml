@@ -221,6 +221,10 @@ jobs:
           echo "FAIL: only $compared case(s) were compared (expected at least 28)"
           exit 1
         fi
+        # Spec §5.5 orphan regression battery (13 discriminating cases
+        # + the §5.5 counterexample). Needs no deps beyond core Perl.
+        prove -v t/cycle-orphans.t
+
       # The three inputs that used to be here -- expected_root, live_test
       # and live_root_at_task_c -- were DECLARED AND NEVER USED. They
       # were leftovers from a runner-based design, and GitHub rejects a
